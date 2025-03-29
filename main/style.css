@@ -1,0 +1,41 @@
+window.background {
+    background-image: url("img/background.png");
+    background-size: cover;
+}
+
+button.custom-button {
+    border: none;
+    background-color: rgba(255, 255, 255, 0);
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: cover;
+}
+
+button.custom-button label {
+    background-color: rgba(255, 255, 255, 0);
+    color: black;
+}
+
+button.custom-button label {
+    background-color: rgba(0, 0, 0, 0.5);
+    color: white;
+}
+
+/* API Status styles */
+label.status-good {
+    color: #2ecc71;
+    font-weight: bold;
+    padding: 5px 10px;
+    margin: 5px;
+    border-radius: 3px;
+    background-color: rgba(46, 204, 113, 0.1);
+}
+
+label.status-bad {
+    color: #e74c3c;
+    font-weight: bold;
+    padding: 5px 10px;
+    margin: 5px;
+    border-radius: 3px;
+    background-color: rgba(231, 76, 60, 0.1);
+}
