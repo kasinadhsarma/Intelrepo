@@ -174,11 +174,17 @@ export function LiveCapture() {
 
     if (animationRef.current) {
       cancelAnimationFrame(animationRef.current)
+      animationRef.current = null
     }
   }
 
   const processFrame = () => {
-    if (videoRef.current && canvasRef.current && stream) {
+    try {
+      if (!videoRef.current || !canvasRef.current || !stream) {
+        console.warn("Required refs not available for processing frame")
+        return
+      }
+
       // Simulate object detection with random objects
       // In a real implementation, this would call the API or run a local model
       const mockObjects: DetectedObject[] = []
@@ -214,16 +220,27 @@ export function LiveCapture() {
         fpsCounterRef.current = 0
         lastTimeRef.current = now
       }
+    } catch (err) {
+      console.error('Error processing frame:', err)
+      setError('Error processing frame')
     }
   }
 
   const renderFrame = () => {
-    if (videoRef.current && canvasRef.current && stream) {
+    try {
+      if (!videoRef.current || !canvasRef.current || !stream) {
+        console.warn("Required refs not available for rendering frame")
+        return
+      }
+
       const video = videoRef.current
       const canvas = canvasRef.current
       const context = canvas.getContext("2d")
 
-      if (!context) return
+      if (!context) {
+        console.error("Could not get canvas context")
+        return
+      }
 
       // Set canvas dimensions to match video
       canvas.width = video.videoWidth
@@ -262,6 +279,9 @@ export function LiveCapture() {
 
       // Continue the animation loop
       animationRef.current = requestAnimationFrame(renderFrame)
+    } catch (err) {
+      console.error('Error rendering frame:', err)
+      setError('Error rendering frame')
     }
   }
 
@@ -346,11 +366,6 @@ export function LiveCapture() {
               </div>
 
               <div className="relative aspect-video bg-black rounded-lg overflow-hidden">
-                {!isProcessing ? (
-                  <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-                ) : (
-                  <canvas ref={canvasRef} className="w-full h-full object-cover" />
-                )}
                 <video
                   ref={videoRef}
                   autoPlay
@@ -358,6 +373,9 @@ export function LiveCapture() {
                   muted
                   className={isProcessing ? "hidden" : "w-full h-full object-cover"}
                 />
+                {isProcessing && (
+                  <canvas ref={canvasRef} className="w-full h-full object-cover" />
+                )}
 
                 {isProcessing && (
                   <div className="absolute top-2 left-2 bg-black/70 text-white px-2 py-1 rounded text-xs">
@@ -437,6 +455,9 @@ export function LiveCapture() {
                       {detectedObjects
                         .filter((obj) => obj.confidence * 100 >= confidenceThreshold)
                         .map((obj, idx) => (
+                          <div key={idx} className="flex justify-between items-center bg-muted p-2 rounded">
+                            <div className="flex items-center gap-2">
+                              <div
                                 className="w-3 h-3 rounded-full"
                                 style={{ backgroundColor: getColorForLabel(obj.label) }}
                               ></div>
@@ -475,4 +496,3 @@ export function LiveCapture() {
     </div>
   )
 }
-
