@@ -1,11 +1,17 @@
 opencv-python==4.8.1.78
-numpy==1.22.0
+numpy>=1.26.0
 torch==2.2.0
-torchvision==0.10.0
+torchvision>=0.17.0
 PyGObject==3.42.0
 pillow>=10.0.1
 fastapi==0.109.1
 uvicorn==0.27.0
 python-multipart==0.0.9
-langchain==0.1.5
-langchain-community==0.0.16
+langchain>=0.1.5
+langchain-community>=0.0.17
+
+# Test dependencies
+pytest==8.0.0
+pytest-asyncio==0.23.5
+pytest-cov==4.1.0
+httpx==0.26.0  # Required for FastAPI TestClient
