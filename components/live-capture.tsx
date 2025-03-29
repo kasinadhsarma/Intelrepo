@@ -37,26 +37,28 @@ export function LiveCapture() {
   const [fps, setFps] = useState(0)
   const fpsCounterRef = useRef<number>(0)
   const lastTimeRef = useRef<number>(performance.now())
-  const animationRef = useRef<number>()
+  const animationRef = useRef<number | null>(null)
   const processingIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
-    getDevices()
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop())
-      }
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current)
-      }
-      if (processingIntervalRef.current) {
-        clearInterval(processingIntervalRef.current)
-      }
-      if (recordingTimer) {
-        clearInterval(recordingTimer)
+    if (typeof window !== 'undefined') {
+      getDevices()
+      return () => {
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop())
+        }
+        if (animationRef.current) {
+          cancelAnimationFrame(animationRef.current)
+        }
+        if (processingIntervalRef.current) {
+          clearInterval(processingIntervalRef.current)
+        }
+        if (recordingTimer) {
+          clearInterval(recordingTimer)
+        }
       }
     }
-  }, [])
+  }, [stream, recordingTimer])
 
   useEffect(() => {
     if (selectedDeviceId) {
@@ -73,6 +75,7 @@ export function LiveCapture() {
   }, [isProcessing, stream, showBoundingBoxes, showLabels, confidenceThreshold])
 
   const getDevices = async () => {
+    if (typeof window === 'undefined') return
     try {
       // First request camera access to get permission
       const initialStream = await navigator.mediaDevices.getUserMedia({ video: true })
@@ -434,9 +437,6 @@ export function LiveCapture() {
                       {detectedObjects
                         .filter((obj) => obj.confidence * 100 >= confidenceThreshold)
                         .map((obj, idx) => (
-                          <div key={idx} className="flex justify-between items-center bg-muted p-2 rounded">
-                            <div className="flex items-center gap-2">
-                              <div
                                 className="w-3 h-3 rounded-full"
                                 style={{ backgroundColor: getColorForLabel(obj.label) }}
                               ></div>

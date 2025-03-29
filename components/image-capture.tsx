@@ -26,15 +26,19 @@ export function ImageCapture({ onCapture, hideDownload = false }: ImageCapturePr
   const [isProcessing, setIsProcessing] = useState(false)
 
   useEffect(() => {
-    startCamera()
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop())
+    // Only run on client-side
+    if (typeof window !== 'undefined') {
+      startCamera()
+      return () => {
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop())
+        }
       }
     }
-  }, [])
+  }, [stream])
 
   const startCamera = async () => {
+    if (typeof window === 'undefined') return
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user" },
@@ -258,4 +262,3 @@ export function ImageCapture({ onCapture, hideDownload = false }: ImageCapturePr
     </div>
   )
 }
-

@@ -1,10 +1,10 @@
 import type { Metadata } from 'next'
+import { ThemeProvider } from "@/components/theme-provider"
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'v0 App',
-  description: 'Created with v0',
-  generator: 'v0.dev',
+  title:"Road Object Detection",
+  description: "A web application for road object detection and segmentation",
 }
 
 export default function RootLayout({
@@ -13,8 +13,12 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en">
-      <body>{children}</body>
+    <html lang="en" suppressHydrationWarning>
+      <body suppressHydrationWarning>
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+          {children}
+        </ThemeProvider>
+      </body>
     </html>
   )
 }

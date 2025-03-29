@@ -30,18 +30,22 @@ export function VideoCapture() {
   const [processingProgress, setProcessingProgress] = useState(0)
 
   useEffect(() => {
-    startCamera()
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop())
-      }
-      if (recordingTimer) {
-        clearInterval(recordingTimer)
+    // Only run on client-side
+    if (typeof window !== 'undefined') {
+      startCamera()
+      return () => {
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop())
+        }
+        if (recordingTimer) {
+          clearInterval(recordingTimer)
+        }
       }
     }
-  }, [])
+  }, [stream, recordingTimer])
 
   const startCamera = async () => {
+    if (typeof window === 'undefined') return
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: true,
@@ -364,4 +368,3 @@ export function VideoCapture() {
     </div>
   )
 }
-
