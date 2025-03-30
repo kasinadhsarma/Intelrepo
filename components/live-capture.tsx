@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
-import { RefreshCw, Zap, Camera, Video } from "lucide-react"
+import { Zap, Camera, Video, Square } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 
@@ -41,47 +41,30 @@ export function LiveCapture() {
   const processingIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      getDevices()
-      return () => {
-        if (stream) {
-          stream.getTracks().forEach((track) => track.stop())
-        }
-        if (animationRef.current) {
-          cancelAnimationFrame(animationRef.current)
-        }
-        if (processingIntervalRef.current) {
-          clearInterval(processingIntervalRef.current)
-        }
-        if (recordingTimer) {
-          clearInterval(recordingTimer)
-        }
+    // Only clean up resources when component unmounts
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop())
+      }
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current)
+      }
+      if (processingIntervalRef.current) {
+        clearInterval(processingIntervalRef.current)
+      }
+      if (recordingTimer) {
+        clearInterval(recordingTimer)
       }
     }
-  }, [stream, recordingTimer])
+  }, [])
 
   useEffect(() => {
-    if (selectedDeviceId) {
-      startCamera()
-    }
+    // Don't automatically start camera when device is selected
   }, [selectedDeviceId])
 
-  useEffect(() => {
-    if (isProcessing && stream) {
-      startObjectDetection()
-    } else {
-      stopObjectDetection()
-    }
-  }, [isProcessing, stream, showBoundingBoxes, showLabels, confidenceThreshold])
-
   const getDevices = async () => {
-    if (typeof window === 'undefined') return
     try {
-      // First request camera access to get permission
-      const initialStream = await navigator.mediaDevices.getUserMedia({ video: true })
-      initialStream.getTracks().forEach((track) => track.stop())
-
-      // Now get the list of devices
+      // Get devices without requesting camera access first
       const devices = await navigator.mediaDevices.enumerateDevices()
       const videoDevices = devices.filter((device) => device.kind === "videoinput")
       setDevices(videoDevices)
@@ -90,7 +73,7 @@ export function LiveCapture() {
         setSelectedDeviceId(videoDevices[0].deviceId)
       }
     } catch (err) {
-      setError("Error accessing camera devices. Please make sure you've granted camera permissions.")
+      setError("Error accessing device list. Please make sure you've granted permissions.")
       console.error("Error accessing devices:", err)
     }
   }
@@ -101,6 +84,9 @@ export function LiveCapture() {
       if (stream) {
         stream.getTracks().forEach((track) => track.stop())
       }
+
+      // Get the list of devices first
+      await getDevices()
 
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -141,6 +127,10 @@ export function LiveCapture() {
       }
 
       setError(null)
+
+      // Reset processing state when camera is started
+      setIsProcessing(false)
+      setDetectedObjects([])
     } catch (err) {
       setError("Error accessing camera. Please make sure you've granted camera permissions.")
       console.error("Error accessing camera:", err)
@@ -148,6 +138,13 @@ export function LiveCapture() {
   }
 
   const toggleProcessing = () => {
+    if (!stream) return
+
+    if (isProcessing) {
+      stopObjectDetection()
+    } else {
+      startObjectDetection()
+    }
     setIsProcessing(!isProcessing)
   }
 
@@ -174,17 +171,11 @@ export function LiveCapture() {
 
     if (animationRef.current) {
       cancelAnimationFrame(animationRef.current)
-      animationRef.current = null
     }
   }
 
   const processFrame = () => {
-    try {
-      if (!videoRef.current || !canvasRef.current || !stream) {
-        console.warn("Required refs not available for processing frame")
-        return
-      }
-
+    if (videoRef.current && canvasRef.current && stream) {
       // Simulate object detection with random objects
       // In a real implementation, this would call the API or run a local model
       const mockObjects: DetectedObject[] = []
@@ -220,27 +211,16 @@ export function LiveCapture() {
         fpsCounterRef.current = 0
         lastTimeRef.current = now
       }
-    } catch (err) {
-      console.error('Error processing frame:', err)
-      setError('Error processing frame')
     }
   }
 
   const renderFrame = () => {
-    try {
-      if (!videoRef.current || !canvasRef.current || !stream) {
-        console.warn("Required refs not available for rendering frame")
-        return
-      }
-
+    if (videoRef.current && canvasRef.current && stream) {
       const video = videoRef.current
       const canvas = canvasRef.current
       const context = canvas.getContext("2d")
 
-      if (!context) {
-        console.error("Could not get canvas context")
-        return
-      }
+      if (!context) return
 
       // Set canvas dimensions to match video
       canvas.width = video.videoWidth
@@ -279,9 +259,6 @@ export function LiveCapture() {
 
       // Continue the animation loop
       animationRef.current = requestAnimationFrame(renderFrame)
-    } catch (err) {
-      console.error('Error rendering frame:', err)
-      setError('Error rendering frame')
     }
   }
 
@@ -334,12 +311,30 @@ export function LiveCapture() {
     return `${mins}:${secs < 10 ? "0" : ""}${secs}`
   }
 
+  const stopCamera = () => {
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop())
+      setStream(null)
+    }
+
+    if (isProcessing) {
+      stopObjectDetection()
+      setIsProcessing(false)
+    }
+
+    if (isRecording) {
+      stopRecording()
+    }
+
+    setDetectedObjects([])
+  }
+
   return (
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>Live Road Scene Analysis</CardTitle>
-          <CardDescription>Real-time object detection for road scenes</CardDescription>
+          <CardTitle>Live Road Object Detection</CardTitle>
+          <CardDescription>Real-time detection and tracking of road objects</CardDescription>
         </CardHeader>
         <CardContent className="p-6">
           {error && (
@@ -366,24 +361,33 @@ export function LiveCapture() {
               </div>
 
               <div className="relative aspect-video bg-black rounded-lg overflow-hidden">
+                {!stream ? (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="text-center p-4">
+                      <Camera className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+                      <p className="text-muted-foreground">Camera is currently off</p>
+                    </div>
+                  </div>
+                ) : !isProcessing ? (
+                  <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                ) : (
+                  <canvas ref={canvasRef} className="w-full h-full object-cover" />
+                )}
                 <video
                   ref={videoRef}
                   autoPlay
                   playsInline
                   muted
-                  className={isProcessing ? "hidden" : "w-full h-full object-cover"}
+                  className={isProcessing || !stream ? "hidden" : "w-full h-full object-cover"}
                 />
-                {isProcessing && (
-                  <canvas ref={canvasRef} className="w-full h-full object-cover" />
-                )}
 
-                {isProcessing && (
+                {isProcessing && stream && (
                   <div className="absolute top-2 left-2 bg-black/70 text-white px-2 py-1 rounded text-xs">
                     FPS: {fps}
                   </div>
                 )}
 
-                {isRecording && (
+                {isRecording && stream && (
                   <div className="absolute top-2 right-2 bg-red-500 text-white px-2 py-1 rounded-md flex items-center text-xs">
                     <div className="w-2 h-2 rounded-full bg-white mr-2 animate-pulse"></div>
                     REC {formatTime(recordingDuration)}
@@ -392,26 +396,35 @@ export function LiveCapture() {
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <Button variant={isProcessing ? "default" : "outline"} onClick={toggleProcessing}>
-                  <Zap className="mr-2 h-4 w-4" />
-                  {isProcessing ? "Processing Live" : "Start Processing"}
-                </Button>
-
-                <Button variant="ghost" onClick={startCamera}>
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                  Restart Camera
-                </Button>
-
-                {!isRecording ? (
-                  <Button variant="outline" onClick={startRecording} disabled={!stream}>
-                    <Video className="mr-2 h-4 w-4" />
-                    Record
+                {!stream ? (
+                  <Button onClick={startCamera}>
+                    <Camera className="mr-2 h-4 w-4" />
+                    Start Camera
                   </Button>
                 ) : (
-                  <Button variant="destructive" onClick={stopRecording}>
-                    <Camera className="mr-2 h-4 w-4" />
-                    Stop Recording
-                  </Button>
+                  <>
+                    <Button variant={isProcessing ? "default" : "outline"} onClick={toggleProcessing}>
+                      <Zap className="mr-2 h-4 w-4" />
+                      {isProcessing ? "Stop Processing" : "Start Processing"}
+                    </Button>
+
+                    {!isRecording ? (
+                      <Button variant="outline" onClick={startRecording}>
+                        <Video className="mr-2 h-4 w-4" />
+                        Record
+                      </Button>
+                    ) : (
+                      <Button variant="destructive" onClick={stopRecording}>
+                        <Square className="mr-2 h-4 w-4" />
+                        Stop Recording
+                      </Button>
+                    )}
+
+                    <Button variant="ghost" onClick={stopCamera}>
+                      <Camera className="mr-2 h-4 w-4 text-red-500" />
+                      Turn Off Camera
+                    </Button>
+                  </>
                 )}
               </div>
             </div>
@@ -444,34 +457,76 @@ export function LiveCapture() {
                     onValueChange={(values) => setConfidenceThreshold(values[0])}
                   />
                 </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="object-filter">Object Filter</Label>
+                  <Select defaultValue="all">
+                    <SelectTrigger id="object-filter">
+                      <SelectValue placeholder="Filter objects" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Objects</SelectItem>
+                      <SelectItem value="vehicles">Vehicles Only</SelectItem>
+                      <SelectItem value="pedestrians">Pedestrians Only</SelectItem>
+                      <SelectItem value="signs">Traffic Signs Only</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               <div className="space-y-4">
-                <h3 className="font-medium">Detected Objects</h3>
+                <h3 className="font-medium">Detected Road Objects</h3>
 
                 {isProcessing ? (
                   detectedObjects.length > 0 ? (
-                    <div className="space-y-2 max-h-[200px] overflow-y-auto">
-                      {detectedObjects
-                        .filter((obj) => obj.confidence * 100 >= confidenceThreshold)
-                        .map((obj, idx) => (
-                          <div key={idx} className="flex justify-between items-center bg-muted p-2 rounded">
-                            <div className="flex items-center gap-2">
-                              <div
-                                className="w-3 h-3 rounded-full"
-                                style={{ backgroundColor: getColorForLabel(obj.label) }}
-                              ></div>
-                              <span>{obj.label}</span>
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-blue-100 dark:bg-blue-900/30 p-2 rounded text-center">
+                          <span className="text-xs text-muted-foreground">Vehicles</span>
+                          <p className="text-xl font-semibold">
+                            {
+                              detectedObjects.filter(
+                                (obj) =>
+                                  ["car", "truck", "bus"].includes(obj.label) &&
+                                  obj.confidence * 100 >= confidenceThreshold,
+                              ).length
+                            }
+                          </p>
+                        </div>
+                        <div className="bg-red-100 dark:bg-red-900/30 p-2 rounded text-center">
+                          <span className="text-xs text-muted-foreground">Pedestrians</span>
+                          <p className="text-xl font-semibold">
+                            {
+                              detectedObjects.filter(
+                                (obj) => obj.label === "pedestrian" && obj.confidence * 100 >= confidenceThreshold,
+                              ).length
+                            }
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 max-h-[200px] overflow-y-auto">
+                        {detectedObjects
+                          .filter((obj) => obj.confidence * 100 >= confidenceThreshold)
+                          .map((obj, idx) => (
+                            <div key={idx} className="flex justify-between items-center bg-muted p-2 rounded">
+                              <div className="flex items-center gap-2">
+                                <div
+                                  className="w-3 h-3 rounded-full"
+                                  style={{ backgroundColor: getColorForLabel(obj.label) }}
+                                ></div>
+                                <span>{obj.label}</span>
+                              </div>
+                              <Badge variant="outline">{Math.round(obj.confidence * 100)}%</Badge>
                             </div>
-                            <Badge variant="outline">{Math.round(obj.confidence * 100)}%</Badge>
-                          </div>
-                        ))}
+                          ))}
+                      </div>
                     </div>
                   ) : (
-                    <p className="text-sm text-muted-foreground">No objects detected</p>
+                    <p className="text-sm text-muted-foreground">No road objects detected</p>
                   )
                 ) : (
-                  <p className="text-sm text-muted-foreground">Start processing to detect objects</p>
+                  <p className="text-sm text-muted-foreground">Start processing to detect road objects</p>
                 )}
               </div>
             </div>
@@ -481,18 +536,19 @@ export function LiveCapture() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Live Detection Tips</CardTitle>
+          <CardTitle>Live Road Detection Tips</CardTitle>
         </CardHeader>
         <CardContent>
           <ul className="list-disc pl-5 space-y-2">
             <li>Position your camera with a clear view of the road</li>
             <li>Adjust the confidence threshold based on detection quality</li>
-            <li>Record important moments for later analysis</li>
-            <li>For best performance, ensure good lighting conditions</li>
-            <li>Higher FPS indicates better real-time performance</li>
+            <li>Use object filters to focus on specific road elements</li>
+            <li>Record important moments for later detailed analysis</li>
+            <li>Higher FPS indicates better real-time detection performance</li>
           </ul>
         </CardContent>
       </Card>
     </div>
   )
 }
+

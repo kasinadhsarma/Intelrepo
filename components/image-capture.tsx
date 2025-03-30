@@ -26,19 +26,15 @@ export function ImageCapture({ onCapture, hideDownload = false }: ImageCapturePr
   const [isProcessing, setIsProcessing] = useState(false)
 
   useEffect(() => {
-    // Only run on client-side
-    if (typeof window !== 'undefined') {
-      startCamera()
-      return () => {
-        if (stream) {
-          stream.getTracks().forEach((track) => track.stop())
-        }
+    // Don't automatically start camera
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop())
       }
     }
-  }, [stream])
+  }, [])
 
   const startCamera = async () => {
-    if (typeof window === 'undefined') return
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user" },
@@ -143,12 +139,26 @@ export function ImageCapture({ onCapture, hideDownload = false }: ImageCapturePr
 
   const currentImage = capturedImage || uploadedImage
 
+  const getObjectColor = (label: string) => {
+    if (label.includes("car") || label.includes("truck") || label.includes("bus")) {
+      return "#3b82f6" // blue
+    } else if (label.includes("person") || label.includes("pedestrian")) {
+      return "#ef4444" // red
+    } else if (label.includes("sign") || label.includes("light")) {
+      return "#f59e0b" // amber
+    } else if (label.includes("bicycle") || label.includes("motorcycle")) {
+      return "#10b981" // green
+    } else {
+      return "#6b7280" // gray
+    }
+  }
+
   return (
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>Road Scene Image Capture</CardTitle>
-          <CardDescription>Capture or upload images of road scenes for analysis</CardDescription>
+          <CardTitle>Road Object Detection</CardTitle>
+          <CardDescription>Capture or upload images to detect road objects</CardDescription>
         </CardHeader>
         <CardContent className="p-6">
           {error && (
@@ -162,14 +172,30 @@ export function ImageCapture({ onCapture, hideDownload = false }: ImageCapturePr
               {!currentImage ? (
                 <>
                   <div className="relative aspect-video bg-black rounded-lg overflow-hidden">
-                    <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                    {!stream ? (
+                      <div className="flex items-center justify-center h-full">
+                        <div className="text-center p-4">
+                          <Camera className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+                          <p className="text-muted-foreground">Camera is currently off</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                    )}
                   </div>
 
                   <div className="flex justify-center gap-4">
-                    <Button onClick={captureImage}>
-                      <Camera className="mr-2 h-4 w-4" />
-                      Capture Image
-                    </Button>
+                    {!stream ? (
+                      <Button onClick={startCamera}>
+                        <Camera className="mr-2 h-4 w-4" />
+                        Start Camera
+                      </Button>
+                    ) : (
+                      <Button onClick={captureImage}>
+                        <Camera className="mr-2 h-4 w-4" />
+                        Capture Image
+                      </Button>
+                    )}
 
                     <input
                       type="file"
@@ -221,23 +247,33 @@ export function ImageCapture({ onCapture, hideDownload = false }: ImageCapturePr
 
             {processingResult && (
               <div className="space-y-4">
-                <h3 className="font-medium text-lg">Analysis Results</h3>
+                <h3 className="font-medium text-lg">Road Objects Detected</h3>
 
                 <div className="bg-muted p-4 rounded-lg">
-                  <h4 className="font-medium mb-2">Caption:</h4>
+                  <h4 className="font-medium mb-2">Scene Analysis:</h4>
                   <p>{processingResult.caption}</p>
                 </div>
 
                 <div>
                   <h4 className="font-medium mb-2">Detected Objects:</h4>
-                  <ul className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
                     {processingResult.detected_objects.map((obj: any, index: number) => (
-                      <li key={index} className="bg-muted p-2 rounded flex justify-between">
-                        <span>{obj.label}</span>
-                        <span className="text-muted-foreground">{Math.round(obj.confidence * 100)}%</span>
-                      </li>
+                      <div key={index} className="bg-muted p-2 rounded flex justify-between items-center">
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="w-3 h-3 rounded-full"
+                            style={{
+                              backgroundColor: getObjectColor(obj.label),
+                            }}
+                          ></div>
+                          <span>{obj.label}</span>
+                        </div>
+                        <span className="text-muted-foreground text-sm font-medium">
+                          {Math.round(obj.confidence * 100)}%
+                        </span>
+                      </div>
                     ))}
-                  </ul>
+                  </div>
                 </div>
               </div>
             )}
@@ -247,18 +283,19 @@ export function ImageCapture({ onCapture, hideDownload = false }: ImageCapturePr
 
       <Card>
         <CardHeader>
-          <CardTitle>Tips for Road Scene Capture</CardTitle>
+          <CardTitle>Road Object Detection Tips</CardTitle>
         </CardHeader>
         <CardContent>
           <ul className="list-disc pl-5 space-y-2">
             <li>Position your camera to capture the full road scene</li>
-            <li>Ensure good lighting conditions for better detection</li>
+            <li>Ensure good lighting conditions for better detection accuracy</li>
             <li>Try to capture scenes with various road elements (vehicles, signs, pedestrians)</li>
             <li>For best results, keep the camera steady</li>
-            <li>Avoid capturing in extreme weather conditions unless specifically testing those scenarios</li>
+            <li>The system can detect vehicles, pedestrians, cyclists, traffic signs, and more</li>
           </ul>
         </CardContent>
       </Card>
     </div>
   )
 }
+

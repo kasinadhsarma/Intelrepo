@@ -53,86 +53,69 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Model management
-class ModelManager:
-    _instance = None
+# Initialize Ollama with Gemma3 model
+llm = OllamaLLM(model="gemma3", temperature=0.7)
 
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(ModelManager, cls).__new__(cls)
-            cls._instance.initialized = False
-        return cls._instance
+# Initialize models
+def setup_models():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Object detection model
+    detection_model = fasterrcnn_resnet50_fpn(weights=FasterRCNN_ResNet50_FPN_Weights.DEFAULT)
+    detection_model.eval()
+    detection_model.to(device)
+    
+    # Segmentation model
+    segmentation_model = deeplabv3_resnet50(weights=DeepLabV3_ResNet50_Weights.DEFAULT)
+    segmentation_model.eval()
+    segmentation_model.to(device)
+    
+    return detection_model, segmentation_model, device
 
-    def __init__(self):
-        if not self.initialized:
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            self.detection_model = None
-            self.segmentation_model = None
-            self.llm = None
-            self.caption_chain = None
-            self.initialized = True
-            self.status = "Not initialized"
-            self.last_error = None
-            try:
-                self.setup_models()
-                self.setup_llm()
-                self.status = "Ready"
-            except Exception as e:
-                self.status = "Error"
-                self.last_error = str(e)
-                print(f"Error during initialization: {e}")
+detection_model, segmentation_model, device = setup_models()
 
-    def setup_models(self):
-        try:
-            # Object detection model
-            self.detection_model = fasterrcnn_resnet50_fpn(weights=FasterRCNN_ResNet50_FPN_Weights.DEFAULT)
-            self.detection_model.eval()
-            self.detection_model.to(self.device)
-            
-            # Segmentation model
-            self.segmentation_model = deeplabv3_resnet50(weights=DeepLabV3_ResNet50_Weights.DEFAULT)
-            self.segmentation_model.eval()
-            self.segmentation_model.to(self.device)
-        except Exception as e:
-            self.last_error = str(e)
-            print(f"Error initializing models: {str(e)}")
-            raise
-
-    def setup_llm(self):
-        try:
-            self.llm = OllamaLLM(model="gemma3", temperature=0.7)
-            road_caption_prompt = PromptTemplate.from_template(
-                "Based on object detection results in a road scene, describe what's happening in this traffic scenario. "
-                "The scene contains: {objects}. Create a detailed caption focusing on the road environment, "
-                "traffic conditions, potential hazards, and spatial relationships between vehicles, pedestrians, and infrastructure. "
-                "Do not ask for an image - just generate the caption based on the objects listed."
-            )
-            self.caption_chain = road_caption_prompt | self.llm | StrOutputParser()
-        except Exception as e:
-            self.last_error = str(e)
-            print(f"Error initializing LLM: {str(e)}")
-            raise
-
-    def cleanup(self):
-        try:
-            if self.detection_model:
-                self.detection_model.to('cpu')
-                del self.detection_model
-            if self.segmentation_model:
-                self.segmentation_model.to('cpu')
-                del self.segmentation_model
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception as e:
-            print(f"Error during cleanup: {str(e)}")
-
-# Initialize model manager
-model_manager = ModelManager()
+# Caption generation chain using LangChain syntax
+road_caption_prompt = PromptTemplate.from_template(
+    "Based on object detection results in a road scene, describe what's happening in this traffic scenario. "
+    "The scene contains: {objects}. Create a detailed caption focusing on the road environment, "
+    "traffic conditions, potential hazards, and spatial relationships between vehicles, pedestrians, and infrastructure. "
+    "Also mention any potential safety concerns or traffic rule violations if applicable. "
+    "Do not ask for an image - just generate the caption based on the objects listed."
+)
+caption_chain = road_caption_prompt | llm | StrOutputParser()
 
 # Helper function to convert image to base64
 def image_to_base64(img):
     _, buffer = cv2.imencode('.png', img)
     return f"data:image/png;base64,{base64.b64encode(buffer).decode('utf-8')}"
+
+def calculate_safety_score(detected_objects):
+    """
+    Calculate a simple safety score based on detected objects
+    Higher score means potentially safer scene (fewer objects, less crowded)
+    """
+    # Count objects by category
+    vehicles = len([obj for obj in detected_objects if obj['label'] in ['car', 'truck', 'bus', 'motorcycle']])
+    pedestrians = len([obj for obj in detected_objects if obj['label'] == 'person'])
+    traffic_elements = len([obj for obj in detected_objects if obj['label'] in ['traffic light', 'stop sign']])
+    
+    # More objects generally means more complex scene with potentially more hazards
+    total_objects = len(detected_objects)
+    
+    # Basic scoring logic (can be refined)
+    if total_objects == 0:
+        return 100  # Empty road, highest safety
+    
+    # Reduce score based on number of objects and their types
+    base_score = 100
+    base_score -= min(50, vehicles * 5)  # More vehicles reduce safety
+    base_score -= min(30, pedestrians * 10)  # Pedestrians reduce safety more
+    
+    # Having traffic elements improves safety
+    base_score += min(20, traffic_elements * 5)
+    
+    # Ensure score is between 0-100
+    return max(0, min(100, base_score))
 
 @app.post("/detect_objects/")
 async def detect_objects(file: UploadFile = File(...)):
@@ -140,35 +123,21 @@ async def detect_objects(file: UploadFile = File(...)):
     Endpoint for road object detection and caption generation
     Returns detected objects, their locations, and an AI-generated caption
     """
-    if not model_manager.detection_model:
-        raise HTTPException(status_code=500, detail="Detection model not initialized")
-
-    if not model_manager.llm or not model_manager.caption_chain:
-        raise HTTPException(status_code=500, detail="Language model not initialized")
-
     try:
         # Read and process image
-        try:
-            contents = await file.read()
-            nparr = np.frombuffer(contents, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if img is None:
-                raise HTTPException(status_code=400, detail="Could not decode image")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Error processing image: {str(e)}")
-
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
         # Convert BGR to RGB
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        try:
-            # Prepare image for model
-            img_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).float() / 255.0
-            img_tensor = img_tensor.to(model_manager.device)
-            
-            with torch.no_grad():
-                predictions = model_manager.detection_model([img_tensor])
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Model inference error: {str(e)}")
+        # Prepare image for model
+        img_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).float() / 255.0
+        img_tensor = img_tensor.to(device)
+        
+        with torch.no_grad():
+            predictions = detection_model([img_tensor])
         
         # Process predictions
         predictions = [{k: v.to('cpu') for k, v in pred.items()} for pred in predictions]
@@ -190,13 +159,121 @@ async def detect_objects(file: UploadFile = File(...)):
         
         # Generate caption using Gemma3 model with LangChain syntax
         objects_text = ", ".join([obj['label'] for obj in detected_objects])
-        caption = model_manager.caption_chain.invoke({"objects": objects_text})
+        caption = caption_chain.invoke({"objects": objects_text})
         
         return {
             'detected_objects': detected_objects,
             'caption': caption.strip(),
             'model_type': 'fasterrcnn',
-            'device': str(model_manager.device)
+            'device': str(device),
+            'object_categories': {
+                'vehicles': len([obj for obj in detected_objects if obj['label'] in ['car', 'truck', 'bus', 'motorcycle']]),
+                'pedestrians': len([obj for obj in detected_objects if obj['label'] == 'person']),
+                'traffic_elements': len([obj for obj in detected_objects if obj['label'] in ['traffic light', 'stop sign']]),
+                'cyclists': len([obj for obj in detected_objects if obj['label'] == 'bicycle']),
+            },
+            'safety_score': calculate_safety_score(detected_objects),  # You would need to implement this function
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/segment_image/")
+async def segment_image(file: UploadFile = File(...)):
+    """
+    Endpoint for road scene segmentation
+    Returns original image, segmented image, and mask image
+    """
+    try:
+        start_time = time.time()
+        
+        # Read and process image
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        # Convert BGR to RGB
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Prepare image for model
+        img_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).float() / 255.0
+        img_tensor = img_tensor.unsqueeze(0)  # Add batch dimension
+        img_tensor = img_tensor.to(device)
+        
+        # Perform segmentation
+        with torch.no_grad():
+            output = segmentation_model(img_tensor)['out'][0]
+        
+        # Get segmentation mask
+        output_predictions = output.argmax(0).byte().cpu().numpy()
+        
+        # Count unique segments (excluding background)
+        unique_segments = np.unique(output_predictions)
+        segments_count = len(unique_segments) - (1 if 0 in unique_segments else 0)
+        
+        # Create colored segmentation mask
+        r = np.zeros_like(output_predictions).astype(np.uint8)
+        g = np.zeros_like(output_predictions).astype(np.uint8)
+        b = np.zeros_like(output_predictions).astype(np.uint8)
+        
+        # Road-specific color scheme
+        color_map = {
+            0: (0, 0, 0),      # background
+            1: (128, 64, 128),  # road
+            2: (244, 35, 232),  # sidewalk
+            3: (70, 70, 70),    # building
+            4: (102, 102, 156), # wall
+            5: (190, 153, 153), # fence
+            6: (153, 153, 153), # pole
+            7: (250, 170, 30),  # traffic light
+            8: (220, 220, 0),   # traffic sign
+            9: (107, 142, 35),  # vegetation
+            10: (152, 251, 152), # terrain
+            11: (70, 130, 180),  # sky
+            12: (220, 20, 60),   # person
+            13: (255, 0, 0),     # rider
+            14: (0, 0, 142),     # car
+            15: (0, 0, 70),      # truck
+            16: (0, 60, 100),    # bus
+            17: (0, 80, 100),    # train
+            18: (0, 0, 230),     # motorcycle
+            19: (119, 11, 32),   # bicycle
+        }
+        
+        # Assign colors to segments
+        for segment_id in unique_segments:
+            if segment_id in color_map:
+                r_val, g_val, b_val = color_map[segment_id]
+            else:
+                r_val = np.random.randint(0, 255)
+                g_val = np.random.randint(0, 255)
+                b_val = np.random.randint(0, 255)
+                
+            r[output_predictions == segment_id] = r_val
+            g[output_predictions == segment_id] = g_val
+            b[output_predictions == segment_id] = b_val
+        
+        # Combine channels
+        colored_mask = np.stack([r, g, b], axis=2)
+        
+        # Create segmented image (original with overlay)
+        segmented_img = img_rgb.copy()
+        mask = output_predictions > 0  # Non-background pixels
+        segmented_img[mask] = cv2.addWeighted(segmented_img[mask], 0.5, colored_mask[mask], 0.5, 0)
+        
+        # Convert images to base64 for response
+        original_base64 = image_to_base64(cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR))
+        segmented_base64 = image_to_base64(cv2.cvtColor(segmented_img, cv2.COLOR_RGB2BGR))
+        mask_base64 = image_to_base64(colored_mask)
+        
+        processing_time = time.time() - start_time
+        
+        return {
+            'original_image': original_base64,
+            'segmented_image': segmented_base64,
+            'mask_image': mask_base64,
+            'segments_count': segments_count,
+            'processing_time': processing_time
         }
         
     except Exception as e:
@@ -208,12 +285,6 @@ async def process_video(file: UploadFile = File(...)):
     Endpoint for processing video files
     Extracts frames, performs object detection, and returns analysis
     """
-    if not model_manager.detection_model:
-        raise HTTPException(status_code=500, detail="Detection model not initialized")
-
-    if not model_manager.llm or not model_manager.caption_chain:
-        raise HTTPException(status_code=500, detail="Language model not initialized")
-
     try:
         # Create a temporary file to store the uploaded video
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
@@ -253,11 +324,11 @@ async def process_video(file: UploadFile = File(...)):
                 
                 # Prepare image for model
                 img_tensor = torch.from_numpy(frame_rgb).permute(2, 0, 1).float() / 255.0
-                img_tensor = img_tensor.to(model_manager.device)
+                img_tensor = img_tensor.to(device)
                 
                 # Perform detection
                 with torch.no_grad():
-                    predictions = model_manager.detection_model([img_tensor])
+                    predictions = detection_model([img_tensor])
                 
                 # Process predictions
                 predictions = [{k: v.to('cpu') for k, v in pred.items()} for pred in predictions]
@@ -293,7 +364,7 @@ async def process_video(file: UploadFile = File(...)):
             
             # Generate a summary caption
             summary_objects = ", ".join([f"{count} {label}s" for label, count in object_counts.items()])
-            summary_caption = model_manager.caption_chain.invoke({"objects": summary_objects})
+            summary_caption = caption_chain.invoke({"objects": summary_objects})
             
             return {
                 'video_info': {
@@ -318,25 +389,9 @@ async def process_video(file: UploadFile = File(...)):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {
-        "status": model_manager.status,
-        "device": str(model_manager.device),
-        "models": {
-            "detection": "loaded" if model_manager.detection_model else "not loaded",
-            "segmentation": "loaded" if model_manager.segmentation_model else "not loaded",
-            "llm": "loaded" if model_manager.llm else "not loaded"
-        },
-        "last_error": model_manager.last_error
-    }
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup resources on shutdown"""
-    model_manager.cleanup()
+    return {"status": "healthy", "models": ["fasterrcnn", "deeplabv3"]}
 
 if __name__ == "__main__":
     import uvicorn
-    try:
-        uvicorn.run(app, host="0.0.0.0", port=8000)
-    finally:
-        model_manager.cleanup()
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
