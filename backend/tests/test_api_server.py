@@ -4,7 +4,7 @@ from PIL import Image
 import io
 import numpy as np
 import torch
-from backend.api_server import app, setup_model, COCO_CLASSES
+from backend.api_server import app, setup_models, COCO_CLASSES
 
 client = TestClient(app)
 
@@ -47,7 +47,9 @@ def test_detect_objects_endpoint(mock_image):
 
 def test_model_setup():
     """Test model initialization"""
-    model, device = setup_model()
-    assert isinstance(model, torch.nn.Module)
+    detection_model, segmentation_model, device = setup_models()
+    assert isinstance(detection_model, torch.nn.Module)
+    assert isinstance(segmentation_model, torch.nn.Module)
     assert isinstance(device, torch.device)
-    assert model.training == False  # Model should be in eval mode
+    assert detection_model.training == False  # Model should be in eval mode
+    assert segmentation_model.training == False  # Model should be in eval mode

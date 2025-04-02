@@ -15,7 +15,7 @@ automatically configures them for optimal performance on available hardware.
 
 import torch
 from torchvision.models.detection import fasterrcnn_resnet50_fpn
-from yolo_detector import YOLODetector
+from backend.yolo_detector import YOLODetector
 
 class ModelFactory:
     """
