@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Any
 import json
 from datetime import datetime
 from pydantic import BaseModel
+from mcp.server.fastmcp import FastMCP
 
 # COCO class names for object detection
 COCO_CLASSES = [
@@ -56,6 +57,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize MCP server
+mcp_server = FastMCP()
+app.include_router(mcp_server.router)
 
 # Model Context Protocol Classes
 class ModelMetadata(BaseModel):
@@ -190,6 +195,20 @@ def setup_models():
     segmentation_context.mark_ready()
     gemma_context.mark_ready()
     
+    # Register models with MCP
+    for model_name, context in model_registry.contexts.items():
+        mcp_server.register_model(
+            model_name=model_name,
+            model_type=context.metadata.type,
+            description=f"{context.metadata.name} {context.metadata.version} model",
+            model=None,  # We're tracking models separately
+            metadata={
+                "framework": context.metadata.framework,
+                "version": context.metadata.version,
+                "config": context.metadata.config
+            }
+        )
+    
     return detection_model, segmentation_model, detection_weights.transforms(), segmentation_weights.transforms(), device
 
 detection_model, segmentation_model, detection_transforms, segmentation_transforms, device = setup_models()
@@ -239,6 +258,13 @@ async def detect_objects(file: UploadFile = File(...)):
         scale_x = original_size[0] / transformed_size[1]
         scale_y = original_size[1] / transformed_size[0]
         
+        # Log inference start with MCP
+        inference_id = mcp_server.log_inference_start(
+            model_name="fasterrcnn_resnet50",
+            input_data={"image_width": original_size[0], "image_height": original_size[1]},
+            metadata={"format": file.content_type}
+        )
+        
         with torch.no_grad():
             predictions = detection_model(img_tensor)
         
@@ -269,9 +295,25 @@ async def detect_objects(file: UploadFile = File(...)):
             {"detected_objects_count": len(detected_objects)}
         )
         
+        # Log inference completion with MCP
+        mcp_server.log_inference_end(
+            inference_id=inference_id,
+            output_data={"detected_objects": len(detected_objects)},
+            metrics={"detection_time": detection_time},
+            metadata={"objects": [obj['label'] for obj in detected_objects]}
+        )
+        
         # Generate caption asynchronously
         objects_text = ", ".join([obj['label'] for obj in detected_objects])
         caption_start = time.time()
+        
+        # Log LLM inference start with MCP
+        llm_inference_id = mcp_server.log_inference_start(
+            model_name="gemma3",
+            input_data={"objects": objects_text},
+            metadata={"type": "caption_generation"}
+        )
+        
         caption = await run_in_threadpool(caption_chain.invoke, {"objects": objects_text})
         caption_time = time.time() - caption_start
         
@@ -279,6 +321,14 @@ async def detect_objects(file: UploadFile = File(...)):
         gemma_context.update_context(
             {"objects": objects_text},
             {"caption_length": len(caption)}
+        )
+        
+        # Log LLM inference end with MCP
+        mcp_server.log_inference_end(
+            inference_id=llm_inference_id,
+            output_data={"caption_length": len(caption)},
+            metrics={"caption_time": caption_time},
+            metadata={"sentiment": "neutral"}  # Add actual sentiment analysis if available
         )
         
         return {
@@ -300,6 +350,12 @@ async def detect_objects(file: UploadFile = File(...)):
     except Exception as e:
         detection_context.record_error(str(e))
         gemma_context.record_error(str(e))
+        # Log error in MCP
+        mcp_server.log_error(
+            model_name="fasterrcnn_resnet50",
+            error_message=str(e),
+            metadata={"endpoint": "/detect_objects/"}
+        )
         raise HTTPException(500, str(e))
 
 @app.post("/segment_image/")
@@ -311,6 +367,13 @@ async def segment_image(file: UploadFile = File(...)):
         contents = await file.read()
         img_pil = Image.open(io.BytesIO(contents)).convert("RGB")
         original_size = img_pil.size
+        
+        # Log inference start with MCP
+        inference_id = mcp_server.log_inference_start(
+            model_name="deeplabv3_resnet50",
+            input_data={"image_width": original_size[0], "image_height": original_size[1]},
+            metadata={"format": file.content_type}
+        )
         
         # Apply transforms and process
         img_transformed = segmentation_transforms(img_pil)
@@ -345,17 +408,34 @@ async def segment_image(file: UploadFile = File(...)):
         mask = output_predictions > 0
         segmented_img = cv2.addWeighted(original_img, 0.5, colored_mask, 0.5, 0)
         
+        segmentation_time = time.time() - start_time
+        segments_count = len(np.unique(output_predictions)) - 1
+        
+        # Log inference completion with MCP
+        mcp_server.log_inference_end(
+            inference_id=inference_id,
+            output_data={"segments_count": segments_count},
+            metrics={"segmentation_time": segmentation_time},
+            metadata={"unique_classes": list(np.unique(output_predictions))}
+        )
+        
         # Encode images
         return {
             'original_image': image_to_base64(original_img),
             'segmented_image': image_to_base64(segmented_img),
             'mask_image': image_to_base64(colored_mask),
-            'segments_count': len(np.unique(output_predictions)) - 1,
-            'processing_time': time.time() - start_time
+            'segments_count': segments_count,
+            'processing_time': segmentation_time
         }
         
     except Exception as e:
         segmentation_context.record_error(str(e))
+        # Log error in MCP
+        mcp_server.log_error(
+            model_name="deeplabv3_resnet50",
+            error_message=str(e),
+            metadata={"endpoint": "/segment_image/"}
+        )
         raise HTTPException(500, str(e))
 
 @app.post("/process_video/")
@@ -371,6 +451,14 @@ async def process_video(file: UploadFile = File(...)):
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Log inference start with MCP
+        inference_id = mcp_server.log_inference_start(
+            model_name="fasterrcnn_resnet50",
+            input_data={"video_frames": frame_count, "fps": fps},
+            metadata={"format": file.content_type}
+        )
+        
         processed_frames = 0
         all_objects = []
         
@@ -413,7 +501,17 @@ async def process_video(file: UploadFile = File(...)):
         cap.release()
         os.unlink(video_path)
         
-        detection_context.record_inference(time.time() - start_time, all_objects)
+        processing_time = time.time() - start_time
+        detection_context.record_inference(processing_time, all_objects)
+        
+        # Log inference completion with MCP
+        mcp_server.log_inference_end(
+            inference_id=inference_id,
+            output_data={"processed_frames": processed_frames, "detected_objects": len(all_objects)},
+            metrics={"processing_time": processing_time},
+            metadata={"object_types": list(set(obj['label'] for obj in all_objects))}
+        )
+        
         return {
             'processed_frames': processed_frames,
             'detected_objects': all_objects,
@@ -422,7 +520,49 @@ async def process_video(file: UploadFile = File(...)):
         
     except Exception as e:
         detection_context.record_error(str(e))
+        # Log error in MCP
+        mcp_server.log_error(
+            model_name="fasterrcnn_resnet50",
+            error_message=str(e),
+            metadata={"endpoint": "/process_video/"}
+        )
         raise HTTPException(500, str(e))
+
+# Model Context Protocol (MCP) additional endpoints
+@app.get("/mcp/models/")
+async def get_models():
+    """Get all registered models with their contexts and MCP status"""
+    mcp_models = mcp_server.list_models()
+    context_models = model_registry.get_all_contexts()
+    
+    # Merge information
+    for model_name in context_models:
+        if model_name in mcp_models:
+            context_models[model_name]["mcp_status"] = "registered"
+        else:
+            context_models[model_name]["mcp_status"] = "not_registered"
+    
+    return context_models
+
+@app.get("/mcp/stats/")
+async def get_mcp_stats():
+    """Get MCP statistics including inference counts and performance metrics"""
+    return {
+        "mcp_version": mcp_server.version,
+        "registered_models": len(mcp_server.list_models()),
+        "inference_counts": {
+            model_name: model_registry.get_context(model_name).performance.inference_count 
+            for model_name in model_registry.contexts
+        },
+        "total_inferences": sum(
+            model_registry.get_context(model_name).performance.inference_count 
+            for model_name in model_registry.contexts
+        ),
+        "error_counts": {
+            model_name: model_registry.get_context(model_name).performance.error_count 
+            for model_name in model_registry.contexts
+        }
+    }
 
 # Existing utility endpoints remain unchanged
 
